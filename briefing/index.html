@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>주식 브리핑 시뮬레이터</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'app-bg':   '#0f1117',
+            'app-card': '#1a1d27',
+            'app-border':'#2a2d3a',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { background: #0f1117; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .drag-active  { border-color: #3b82f6 !important; background: rgba(30,58,95,0.4) !important; }
+    .animate-spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    input[type=range] { accent-color: #3b82f6; }
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1a1d27; }
+    ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
+    /* timeline */
+    .tl-item { position: relative; padding-left: 28px; }
+    .tl-item:not(:last-child)::before {
+      content: ''; position: absolute; left: 7px; top: 18px;
+      bottom: -16px; width: 2px; background: #2a2d3a;
+    }
+    .tl-dot { position: absolute; left: 0; top: 4px; width: 16px; height: 16px; border-radius: 50%; }
+  </style>
+
+  <!-- ======================================================
+       Streamlit 연동: 아래 줄이 app.py에서 교체됩니다
+       ====================================================== -->
+  <script>
+// __PRELOADED_CONTENT__
+  </script>
+</head>
+
+<body class="bg-[#0f1117] text-white min-h-screen">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   상수
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const SIM_OPTIONS = [
+  { id: 'scenario',  label: '현재 포지션 대응 시나리오 (익절/홀드/손절)' },
+  { id: 'reentry',   label: '재진입 타이밍 로드맵' },
+  { id: 'macro',     label: '거시경제 & 국제정세 리스크 분석' },
+  { id: 'technical', label: '기술적 분석 요약 (RSI/MACD/볼린저)' },
+  { id: 'earnings',  label: '실적발표 전후 전략' },
+  { id: 'today',     label: '오늘 예상 가격대 시뮬레이션 (베타 적용)' },
+  { id: 'rebalance', label: '포트폴리오 리밸런싱 제안' },
+];
+
+const BADGE = {
+  success: 'bg-emerald-900/60 text-emerald-300 border border-emerald-700',
+  warning: 'bg-yellow-900/60  text-yellow-300  border border-yellow-700',
+  danger:  'bg-red-900/60     text-red-300     border border-red-700',
+  info:    'bg-blue-900/60    text-blue-300    border border-blue-700',
+};
+
+const ZONE = {
+  danger:  { wrap: 'border-red-800    bg-red-950/50',    dot: 'bg-red-500',     txt: 'text-red-300'     },
+  warning: { wrap: 'border-yellow-800 bg-yellow-950/50', dot: 'bg-yellow-400',  txt: 'text-yellow-300'  },
+  info:    { wrap: 'border-blue-600   bg-blue-950/60 ring-1 ring-blue-500', dot: 'bg-blue-400',   txt: 'text-blue-300'    },
+  success: { wrap: 'border-emerald-800 bg-emerald-950/50', dot:'bg-emerald-400', txt:'text-emerald-300' },
+};
+
+const TL_DOT = { high: 'bg-red-500', medium: 'bg-yellow-400', low: 'bg-emerald-400' };
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   공통 컴포넌트
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const Badge = ({ type = 'info', children }) => (
+  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${BADGE[type]}`}>{children}</span>
+);
+
+const Card = ({ children, className = '', hl = false }) => (
+  <div className={`rounded-xl border p-4 ${hl ? 'border-blue-500 bg-blue-950/40' : 'border-[#2a2d3a] bg-[#1a1d27]'} ${className}`}>
+    {children}
+  </div>
+);
+
+const SecTitle = ({ icon, title, sub }) => (
+  <div className="flex items-center gap-2 mb-3">
+    <span className="text-lg">{icon}</span>
+    <span className="font-bold text-white text-sm">{title}</span>
+    {sub && <span className="text-xs text-gray-500">{sub}</span>}
+  </div>
+);
+
+const Divider = () => <div className="border-t border-[#2a2d3a] my-5" />;
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 요약 카드
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function SummaryCards({ summary, avgCost }) {
+  if (!summary) return null;
+  const pnl   = summary.unrealizedPnL ?? 0;
+  const rsi   = summary.rsi ?? 50;
+  const sig   = summary.overallSignal ?? '—';
+  const pclr  = pnl  > 0 ? 'text-emerald-400' : pnl  < 0 ? 'text-red-400'     : 'text-gray-300';
+  const rclr  = rsi  > 70 ? 'text-red-400'    : rsi  < 30 ? 'text-emerald-400' : 'text-yellow-400';
+  const sclr  = sig === '매수' ? 'text-emerald-400' : sig === '매도' ? 'text-red-400' : 'text-yellow-400';
+
+  const cards = [
+    { label: '현재가',    val: `$${(summary.currentPrice||0).toLocaleString()}`,        clr: 'text-white',        sub: null },
+    { label: '내 수익률', val: `${pnl>0?'+':''}${pnl.toFixed(2)}%`,                    clr: pclr,                sub: `평단 $${avgCost}` },
+    { label: 'RSI (14)', val: rsi.toFixed(1),                                           clr: rclr,                sub: rsi>70?'과매수 ⚠️':rsi<30?'과매도 🟢':'중립 ✅' },
+    { label: '다음 실적', val: summary.nextEarnings || '—',                             clr: 'text-blue-300',     sub: null },
+    { label: '종합 시그널',val: sig,                                                    clr: sclr,                sub: null },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+      {cards.map(c => (
+        <Card key={c.label}>
+          <div className="text-xs text-gray-500 mb-1">{c.label}</div>
+          <div className={`text-lg font-bold truncate ${c.clr}`}>{c.val}</div>
+          {c.sub && <div className="text-xs text-gray-500 mt-0.5">{c.sub}</div>}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 기술 신호 + 거시 리스크
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function TechMacroGrid({ tech, macro }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+      <Card>
+        <SecTitle icon="📊" title="기술적 신호" />
+        <div className="space-y-2.5">
+          {(tech||[]).map((s,i) => (
+            <div key={i} className="flex items-center justify-between gap-2">
+              <span className="text-sm text-gray-300">{s.name}</span>
+              <Badge type={s.badge}>{s.status}</Badge>
+            </div>
+          ))}
+          {!tech?.length && <div className="text-xs text-gray-600">데이터 없음</div>}
+        </div>
+      </Card>
+      <Card>
+        <SecTitle icon="🌐" title="거시경제 & 리스크" />
+        <div className="space-y-2.5">
+          {(macro||[]).map((r,i) => (
+            <div key={i} className="flex items-center justify-between gap-2">
+              <span className="text-sm text-gray-300">{r.name}</span>
+              <Badge type={r.badge}>{r.value}</Badge>
+            </div>
+          ))}
+          {!macro?.length && <div className="text-xs text-gray-600">데이터 없음</div>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 대응 시나리오 A/B/C
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function ScenarioCards({ scenarios }) {
+  if (!scenarios?.length) return null;
+  const lclr = {
+    '추천':  'text-emerald-300 bg-emerald-900/60 border-emerald-700',
+    '중립':  'text-yellow-300  bg-yellow-900/60  border-yellow-700',
+    '방어적':'text-red-300     bg-red-900/60     border-red-700',
+  };
+  return (
+    <div className="mb-5">
+      <SecTitle icon="🎯" title="대응 시나리오" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {scenarios.map((s,i) => (
+          <Card key={i} hl={s.recommended}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-bold text-white text-sm">시나리오 {s.type}</span>
+              <span className={`text-xs rounded-full px-2 py-0.5 border font-medium ${lclr[s.label]||lclr['중립']}`}>{s.label}</span>
+            </div>
+            <div className="text-sm font-semibold text-white mb-2">{s.title}</div>
+            <div className="text-xs text-gray-400 leading-relaxed mb-3">{s.description}</div>
+            <div className="flex flex-wrap gap-1">
+              {(s.tags||[]).map((t,j) => (
+                <span key={j} className="text-xs bg-[#2a2d3a] text-gray-300 rounded-md px-2 py-0.5">{t}</span>
+              ))}
+            </div>
+            {s.recommended && <div className="mt-2.5 text-xs text-blue-300 font-semibold flex items-center gap-1">⭐ 추천 전략</div>}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 재진입 가격대
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function PriceZones({ zones }) {
+  if (!zones?.length) return null;
+  return (
+    <div className="mb-5">
+      <SecTitle icon="📍" title="재진입 가격대 분석" />
+      <div className="space-y-3">
+        {zones.map((z,i) => {
+          const st = ZONE[z.type] || ZONE.info;
+          return (
+            <div key={i} className={`rounded-xl border p-3.5 ${st.wrap}`}>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className={`w-3 h-3 rounded-full flex-shrink-0 ${st.dot}`} />
+                  <span className={`text-sm font-bold ${st.txt}`}>{z.range}</span>
+                  <span className="text-xs text-gray-400">{z.label}</span>
+                  {z.type === 'info' && <span className="text-xs font-semibold text-blue-300">⭐ 이상적 구간</span>}
+                </div>
+                <span className={`text-xs font-medium flex-shrink-0 ${st.txt}`}>{z.action}</span>
+              </div>
+              <div className="text-xs text-gray-400 pl-5 leading-relaxed">{z.description}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 이벤트 타임라인
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function EventTimeline({ timeline }) {
+  if (!timeline?.length) return null;
+  return (
+    <div className="mb-5">
+      <SecTitle icon="📅" title="핵심 이벤트 타임라인" />
+      <div className="space-y-4">
+        {timeline.map((e,i) => (
+          <div key={i} className="tl-item">
+            <div className={`tl-dot ${TL_DOT[e.importance]||TL_DOT.medium}`} />
+            <div>
+              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                <span className="text-xs text-gray-500 font-mono">{e.date}</span>
+                <span className="text-sm font-semibold text-white">{e.title}</span>
+                <Badge type={e.importance==='high'?'danger':e.importance==='medium'?'warning':'success'}>
+                  {e.importance==='high'?'높음':e.importance==='medium'?'보통':'낮음'}
+                </Badge>
+              </div>
+              <div className="text-xs text-gray-400 leading-relaxed">{e.description}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 오늘 예상 가격대
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function TodaySimulation({ data, nq, setNq }) {
+  if (!data) return null;
+  return (
+    <Card className="mb-5">
+      <SecTitle icon="⚡" title="오늘 예상 가격대 시뮬레이션" sub="나스닥 선물 연동" />
+      {/* 나스닥 선물 슬라이더 */}
+      <div className="mb-5 bg-[#0f1117] rounded-xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-400">나스닥 선물</span>
+          <span className={`text-sm font-bold ${nq>0?'text-emerald-400':nq<0?'text-red-400':'text-gray-300'}`}>
+            {nq>0?'+':''}{nq.toFixed(1)}%
+          </span>
+        </div>
+        <input type="range" min="-5" max="5" step="0.1"
+          value={nq} onChange={e => setNq(parseFloat(e.target.value))}
+          className="w-full h-2 rounded-full"
+        />
+        <div className="flex justify-between text-xs text-gray-600 mt-1">
+          <span>-5%</span><span>0%</span><span>+5%</span>
+        </div>
+      </div>
+
+      {/* 3-col 메트릭 */}
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        {[
+          { label: '예상 시가 범위',  val: data.openRange  },
+          { label: '장중 고점 예상',  val: data.intraHigh  },
+          { label: '기술적 저항선',   val: data.resistance },
+        ].map(m => (
+          <div key={m.label} className="bg-[#0f1117] rounded-xl p-3 text-center">
+            <div className="text-xs text-gray-500 mb-1">{m.label}</div>
+            <div className="text-sm font-bold text-blue-300">{m.val || '—'}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* 시간대별 시나리오 */}
+      {data.hourlyScenarios?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-gray-400 mb-3">⏱ 시간대별 시나리오</div>
+          <div className="space-y-2">
+            {data.hourlyScenarios.map((h,i) => (
+              <div key={i} className="flex gap-3 text-xs bg-[#0f1117] rounded-lg px-3 py-2">
+                <span className="text-blue-400 font-mono w-16 flex-shrink-0">{h.time}</span>
+                <span className="text-gray-300 leading-relaxed">{h.scenario}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   섹션: 재진입 전략 로드맵
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function ReentryRoadmap({ strategy }) {
+  if (!strategy) return null;
+  return (
+    <Card className="mb-5">
+      <SecTitle icon="🗺" title="재진입 전략 로드맵" />
+      <div className="flex items-center gap-2 mb-4 p-3 bg-blue-950/40 border border-blue-800 rounded-xl">
+        <span className="text-xs text-gray-400">이상적 재진입 구간</span>
+        <span className="text-sm font-bold text-blue-300">{strategy.idealRange || '—'}</span>
+      </div>
+
+      {strategy.checklistItems?.length > 0 && (
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-gray-400 mb-2">✅ 진입 체크리스트</div>
+          <ul className="space-y-1.5">
+            {strategy.checklistItems.map((item,i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-gray-300">
+                <span className="text-blue-400 flex-shrink-0 mt-0.5">□</span>
+                <span className="leading-relaxed">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {strategy.strategies?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-gray-400 mb-2">📐 전략 옵션</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {strategy.strategies.map((s,i) => (
+              <div key={i} className={`p-3 rounded-xl border text-xs ${s.recommended?'border-blue-500 bg-blue-950/40':'border-[#2a2d3a] bg-[#0f1117]'}`}>
+                <div className="font-bold text-white mb-1">{s.name}</div>
+                <div className="text-gray-400 leading-relaxed">{s.description}</div>
+                {s.recommended && <div className="text-blue-300 mt-1.5 font-semibold">⭐ 추천</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   히스토리 사이드바
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function HistorySidebar({ history, onLoad, onClear }) {
+  if (!history.length) return null;
+  return (
+    <Card className="mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-bold text-gray-400">🕐 이전 분석</span>
+        <button onClick={onClear} className="text-xs text-gray-600 hover:text-red-400 transition-colors">전체 삭제</button>
+      </div>
+      <div className="space-y-1.5">
+        {history.map((h,i) => (
+          <button key={i} onClick={() => onLoad(h)}
+            className="w-full text-left p-2.5 rounded-lg bg-[#0f1117] hover:bg-[#2a2d3a] border border-[#2a2d3a] hover:border-blue-700 transition-all">
+            <div className="text-xs font-semibold text-white truncate">{h.label}</div>
+            <div className="text-xs text-gray-600 mt-0.5">{h.date}</div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   메인 App
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function App() {
+  /* ─ 상태 ─ */
+  const [apiKey,      setApiKey]      = useState(() => localStorage.getItem('brf_api_key') || '');
+  const [showKey,     setShowKey]     = useState(false);
+
+  const [mdContent,   setMdContent]   = useState('');
+  const [filename,    setFilename]    = useState('');
+  const [charCount,   setCharCount]   = useState(0);
+  const [showPrev,    setShowPrev]    = useState(false);
+  const [isDrag,      setIsDrag]      = useState(false);
+
+  const [avgCost,     setAvgCost]     = useState('');
+  const [extraNote,   setExtraNote]   = useState('');   // 추가 요청사항
+
+  const [opts, setOpts] = useState(
+    () => Object.fromEntries(SIM_OPTIONS.map(o => [o.id, true]))
+  );
+
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState('');
+  const [result,   setResult]   = useState(null);
+  const [nq,       setNq]       = useState(0);
+
+  const [history,  setHistory]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem('brf_history') || '[]'); } catch { return []; }
+  });
+
+  const fileRef = useRef();
+
+  /* ─ Streamlit 연동: 사전 로드된 콘텐츠 ─ */
+  useEffect(() => {
+    const pre = window.preloadedMdContent;
+    if (pre && pre.trim()) {
+      setMdContent(pre);
+      setFilename(window.preloadedFilename || 'Streamlit 보고서.md');
+      setCharCount(pre.length);
+    }
+  }, []);
+
+  /* ─ API Key 저장 ─ */
+  const saveKey = v => { setApiKey(v); localStorage.setItem('brf_api_key', v); };
+
+  /* ─ 파일 처리 ─ */
+  const loadFile = file => {
+    if (!file) return;
+    if (!file.name.endsWith('.md') && !file.name.endsWith('.txt')) {
+      setError('.md 또는 .txt 파일만 지원합니다.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+      const c = e.target.result;
+      setMdContent(c); setFilename(file.name); setCharCount(c.length); setError('');
+    };
+    reader.readAsText(file);
+  };
+
+  /* ─ 프롬프트 빌드 ─ */
+  const buildPrompt = () => {
+    const sel = SIM_OPTIONS.filter(o => opts[o.id]).map(o => o.label).join(', ');
+    return `아래는 주식 분석 보고서입니다:
+
+---
+${mdContent.slice(0, 12000)}
+---
+
+사용자 평균 단가: $${avgCost}
+요청 분석 항목: ${sel}
+${extraNote ? `추가 요청사항: ${extraNote}` : ''}
+
+위 보고서를 분석하여 아래 JSON 구조로만 응답하세요.
+마크다운 코드블록(\`\`\`json) 없이 순수 JSON 객체만 출력하세요.
+
+{
+  "summary": {
+    "currentPrice": number,
+    "avgCost": number,
+    "unrealizedPnL": number,
+    "rsi": number,
+    "nextEarnings": "string",
+    "overallSignal": "매수"|"중립"|"매도"
+  },
+  "technicalSignals": [{ "name": "string", "status": "string", "badge": "success"|"warning"|"danger"|"info" }],
+  "macroRisks":       [{ "name": "string", "value":  "string", "badge": "success"|"warning"|"danger"|"info" }],
+  "scenarios": [{
+    "type": "A"|"B"|"C",
+    "label": "추천"|"중립"|"방어적",
+    "title": "string", "description": "string",
+    "tags": ["string"], "recommended": boolean
+  }],
+  "priceZones": [{
+    "range": "string", "label": "string", "description": "string",
+    "action": "string", "type": "danger"|"warning"|"info"|"success"
+  }],
+  "timeline": [{
+    "date": "string", "title": "string", "description": "string",
+    "importance": "high"|"medium"|"low"
+  }],
+  "reentryStrategy": {
+    "idealRange": "string",
+    "checklistItems": ["string"],
+    "strategies": [{ "name": "string", "description": "string", "recommended": boolean }]
+  },
+  "todaySimulation": {
+    "openRange": "string", "intraHigh": "string", "resistance": "string",
+    "hourlyScenarios": [{ "time": "string", "scenario": "string" }]
+  }
+}
+
+계산: unrealizedPnL = (currentPrice - avgCost) / avgCost * 100
+요청된 항목은 상세하게, 나머지는 간략하게 작성하세요. 반드시 한국어로 작성하세요.`;
+  };
+
+  /* ─ 분석 실행 ─ */
+  const run = async () => {
+    if (!apiKey)    { setError('Anthropic API 키를 입력하세요.'); return; }
+    if (!mdContent) { setError('MD 보고서를 업로드하거나 Streamlit에서 연동하세요.'); return; }
+    if (!avgCost)   { setError('평균 단가를 입력하세요.'); return; }
+    if (!Object.values(opts).some(Boolean)) { setError('시뮬레이션 옵션을 최소 1개 선택하세요.'); return; }
+
+    setLoading(true); setError(''); setResult(null);
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4096,
+          system: '당신은 전문 주식 분석가입니다. 반드시 순수 JSON 객체만 출력하세요. 코드블록, 마크다운, 설명 텍스트 없이 JSON만 반환하세요.',
+          messages: [{ role: 'user', content: buildPrompt() }],
+        }),
+      });
+
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error?.message || `API 오류 ${res.status}`);
+      }
+
+      const data = await res.json();
+      const raw  = (data.content?.[0]?.text || '').trim();
+      // 코드블록 제거 후 파싱
+      const json = raw.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+      const parsed = JSON.parse(json);
+      setResult(parsed);
+
+      // 히스토리 저장
+      const label = filename.replace('stock-report-','').replace('.md','');
+      const entry = { label, date: new Date().toLocaleString('ko-KR'), result: parsed, avgCost, mdContent };
+      const next  = [entry, ...history].slice(0, 5);
+      setHistory(next);
+      localStorage.setItem('brf_history', JSON.stringify(next));
+
+    } catch (e) {
+      setError(`분석 실패: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadHistory = h => {
+    setResult(h.result); setAvgCost(h.avgCost);
+    setMdContent(h.mdContent || ''); setFilename(h.label + '.md');
+    setCharCount((h.mdContent||'').length);
+  };
+  const clearHistory = () => { setHistory([]); localStorage.removeItem('brf_history'); };
+
+  const copyResult = () => {
+    if (!result) return;
+    navigator.clipboard.writeText(JSON.stringify(result, null, 2))
+      .then(() => alert('클립보드에 복사되었습니다.'));
+  };
+
+  const canRun = !loading && apiKey && mdContent && avgCost && Object.values(opts).some(Boolean);
+
+  /* ─ 렌더링 ─ */
+  return (
+    <div className="min-h-screen bg-[#0f1117]">
+
+      {/* ══ 헤더 ══ */}
+      <header className="border-b border-[#2a2d3a] bg-[#1a1d27] sticky top-0 z-20">
+        <div className="max-w-[1400px] mx-auto px-5 py-3.5 flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-lg font-bold text-white leading-tight">📈 주식 브리핑 시뮬레이터</h1>
+            <p className="text-xs text-gray-500 mt-0.5">MD 보고서 업로드 → AI 분석 → 실전 대응 전략</p>
+          </div>
+          {/* API Key */}
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">🔑</span>
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey} onChange={e => saveKey(e.target.value)}
+                placeholder="Anthropic API Key (sk-ant-…)"
+                className="bg-[#0f1117] border border-[#2a2d3a] focus:border-blue-600 rounded-lg pl-8 pr-8 py-2 text-xs text-white w-64 outline-none transition-colors"
+              />
+              <button onClick={() => setShowKey(!showKey)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors text-xs">
+                {showKey ? '🙈' : '👁'}
+              </button>
+            </div>
+            {apiKey && <div className="w-2 h-2 rounded-full bg-emerald-400" title="API 키 입력됨" />}
+          </div>
+        </div>
+      </header>
+
+      {/* ══ 메인 레이아웃 ══ */}
+      <div className="max-w-[1400px] mx-auto px-4 py-5">
+        <div className="flex gap-5 flex-col lg:flex-row">
+
+          {/* ── 왼쪽 패널 ── */}
+          <div className="lg:w-72 xl:w-80 flex-shrink-0 space-y-4">
+
+            {/* 히스토리 */}
+            <HistorySidebar history={history} onLoad={loadHistory} onClear={clearHistory} />
+
+            {/* 파일 업로드 */}
+            <Card>
+              <div className="text-xs font-bold text-gray-300 mb-3">📂 MD 보고서</div>
+
+              {mdContent ? (
+                <div className="bg-[#0f1117] rounded-xl p-3 border border-[#2a2d3a]">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-emerald-400 text-xs">✓</span>
+                      <span className="text-xs text-white font-medium truncate">{filename}</span>
+                    </div>
+                    <button onClick={() => { setMdContent(''); setFilename(''); setCharCount(0); }}
+                      className="text-gray-600 hover:text-red-400 text-xs flex-shrink-0 transition-colors">✕</button>
+                  </div>
+                  <div className="text-xs text-gray-500 mb-2">{charCount.toLocaleString()}자 로드됨</div>
+                  <button onClick={() => setShowPrev(!showPrev)}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                    {showPrev ? '미리보기 닫기 ▲' : '내용 미리보기 ▼'}
+                  </button>
+                  {showPrev && (
+                    <pre className="mt-2 text-xs text-gray-400 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-2.5 max-h-52 overflow-auto whitespace-pre-wrap leading-relaxed">
+                      {mdContent.slice(0, 2000)}{mdContent.length > 2000 ? '\n\n…(이하 생략)' : ''}
+                    </pre>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${isDrag ? 'border-blue-500 bg-blue-950/30 drag-active' : 'border-[#2a2d3a] hover:border-blue-600 hover:bg-blue-950/10'}`}
+                  onClick={() => fileRef.current?.click()}
+                  onDragOver={e => { e.preventDefault(); setIsDrag(true); }}
+                  onDragLeave={() => setIsDrag(false)}
+                  onDrop={e => { e.preventDefault(); setIsDrag(false); loadFile(e.dataTransfer.files[0]); }}
+                >
+                  <div className="text-4xl mb-2">📄</div>
+                  <div className="text-xs text-gray-400 mb-1">드래그 & 드롭 또는 클릭</div>
+                  <div className="text-xs text-gray-600">.md 파일</div>
+                </div>
+              )}
+              <input ref={fileRef} type="file" accept=".md,.txt" className="hidden"
+                onChange={e => loadFile(e.target.files?.[0])} />
+            </Card>
+
+            {/* 평균 단가 */}
+            <Card>
+              <div className="text-xs font-bold text-gray-300 mb-2">💰 내 평균 단가</div>
+              <div className="flex items-center border border-[#2a2d3a] focus-within:border-blue-600 rounded-lg overflow-hidden transition-colors">
+                <span className="px-3 py-2.5 text-gray-400 text-sm bg-[#0f1117] border-r border-[#2a2d3a]">$</span>
+                <input type="number" step="0.01" value={avgCost} onChange={e => setAvgCost(e.target.value)}
+                  placeholder="예: 1412.50"
+                  className="flex-1 bg-[#0f1117] px-3 py-2.5 text-sm text-white outline-none"
+                />
+              </div>
+              {avgCost && result?.summary && (
+                <div className={`mt-2 text-xs font-semibold px-2 py-1 rounded-lg ${result.summary.unrealizedPnL>=0?'text-emerald-300 bg-emerald-950/40':'text-red-300 bg-red-950/40'}`}>
+                  미실현 손익: {result.summary.unrealizedPnL>=0?'+':''}{result.summary.unrealizedPnL?.toFixed(2)}%
+                </div>
+              )}
+            </Card>
+
+            {/* 추가 요청사항 */}
+            <Card>
+              <div className="text-xs font-bold text-gray-300 mb-2">✍️ 추가 요청사항 <span className="text-gray-600 font-normal">(선택)</span></div>
+              <textarea
+                value={extraNote} onChange={e => setExtraNote(e.target.value)}
+                placeholder="예: 단기 트레이딩 관점, 장기 홀딩 여부 등 추가로 분석 원하는 내용"
+                rows={3}
+                className="w-full bg-[#0f1117] border border-[#2a2d3a] focus:border-blue-600 rounded-lg px-3 py-2.5 text-xs text-white outline-none resize-none transition-colors leading-relaxed placeholder:text-gray-600"
+              />
+            </Card>
+
+            {/* 시뮬레이션 옵션 */}
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs font-bold text-gray-300">⚙️ 시뮬레이션 옵션</div>
+                <div className="flex gap-2">
+                  <button onClick={() => setOpts(Object.fromEntries(SIM_OPTIONS.map(o=>[o.id,true])))}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors">전체</button>
+                  <span className="text-gray-700">|</span>
+                  <button onClick={() => setOpts(Object.fromEntries(SIM_OPTIONS.map(o=>[o.id,false])))}
+                    className="text-xs text-gray-500 hover:text-gray-300 transition-colors">해제</button>
+                </div>
+              </div>
+              <div className="space-y-2.5">
+                {SIM_OPTIONS.map(o => (
+                  <label key={o.id} className="flex items-start gap-2.5 cursor-pointer group">
+                    <input type="checkbox" checked={opts[o.id]} onChange={() => setOpts(p => ({...p,[o.id]:!p[o.id]}))}
+                      className="mt-0.5 flex-shrink-0 accent-blue-500 w-3.5 h-3.5" />
+                    <span className="text-xs text-gray-400 group-hover:text-gray-200 leading-relaxed transition-colors">
+                      {o.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </Card>
+
+            {/* 실행 버튼 */}
+            <button onClick={run} disabled={!canRun}
+              className={`w-full py-3.5 rounded-xl font-bold text-sm transition-all ${
+                canRun
+                  ? 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white shadow-lg shadow-blue-900/40'
+                  : 'bg-[#1a1d27] border border-[#2a2d3a] text-gray-600 cursor-not-allowed'
+              }`}>
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  AI 분석 중…
+                </span>
+              ) : '🚀 브리핑 생성'}
+            </button>
+
+            {/* 에러 */}
+            {error && (
+              <div className="bg-red-950/60 border border-red-800 rounded-xl p-3.5 text-xs text-red-300 leading-relaxed">
+                ⚠️ {error}
+                <button onClick={() => setError('')} className="ml-2 text-red-500 hover:text-red-300">✕</button>
+              </div>
+            )}
+          </div>
+
+          {/* ── 오른쪽 출력 패널 ── */}
+          <div className="flex-1 min-w-0">
+
+            {/* 로딩 */}
+            {loading && (
+              <div className="flex flex-col items-center justify-center h-72 gap-4">
+                <div className="w-14 h-14 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                <div className="text-center">
+                  <div className="text-white font-semibold mb-1">AI가 보고서를 분석하고 있습니다</div>
+                  <div className="text-xs text-gray-500">claude-sonnet-4-6 · 최대 20초 소요</div>
+                </div>
+              </div>
+            )}
+
+            {/* 빈 상태 */}
+            {!loading && !result && (
+              <div className="flex flex-col items-center justify-center h-72 gap-3 text-center">
+                <div className="text-6xl">📊</div>
+                <div className="text-white font-semibold text-lg">주식 브리핑 시뮬레이터</div>
+                <div className="text-sm text-gray-500 max-w-sm leading-relaxed">
+                  {mdContent
+                    ? `"${filename}" 로드됨. 평균 단가를 입력하고 브리핑을 생성하세요.`
+                    : 'Streamlit에서 연동하거나 .md 파일을 업로드하고 브리핑을 생성하세요.'
+                  }
+                </div>
+                {mdContent && avgCost && (
+                  <div className="text-xs text-blue-400 animate-pulse">← 왼쪽 "브리핑 생성" 버튼을 클릭하세요</div>
+                )}
+              </div>
+            )}
+
+            {/* 결과 */}
+            {result && !loading && (
+              <div>
+                {/* 내보내기 */}
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                  <div className="text-sm text-gray-400">
+                    📋 분석 결과 — <span className="text-white font-semibold">{filename.replace('stock-report-','').replace('.md','')}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={copyResult}
+                      className="px-3 py-1.5 bg-[#1a1d27] hover:bg-[#2a2d3a] border border-[#2a2d3a] rounded-lg text-xs text-gray-300 hover:text-white transition-all">
+                      📋 JSON 복사
+                    </button>
+                    <button onClick={() => setResult(null)}
+                      className="px-3 py-1.5 bg-[#1a1d27] hover:bg-[#2a2d3a] border border-[#2a2d3a] rounded-lg text-xs text-gray-500 hover:text-red-400 transition-all">
+                      초기화
+                    </button>
+                  </div>
+                </div>
+
+                {/* 섹션 1: 요약 카드 (항상 표시) */}
+                <SummaryCards summary={result.summary} avgCost={avgCost} />
+
+                {/* 섹션 2: 기술 신호 + 거시 리스크 */}
+                {(opts.technical || opts.macro) && (
+                  <><TechMacroGrid tech={result.technicalSignals} macro={result.macroRisks} /><Divider /></>
+                )}
+
+                {/* 섹션 3: 대응 시나리오 */}
+                {opts.scenario && (
+                  <><ScenarioCards scenarios={result.scenarios} /><Divider /></>
+                )}
+
+                {/* 섹션 4: 재진입 가격대 */}
+                {opts.reentry && (
+                  <><PriceZones zones={result.priceZones} /><Divider /></>
+                )}
+
+                {/* 섹션 5: 이벤트 타임라인 */}
+                {opts.earnings && (
+                  <><EventTimeline timeline={result.timeline} /><Divider /></>
+                )}
+
+                {/* 섹션 6: 오늘 예상 가격대 */}
+                {opts.today && (
+                  <><TodaySimulation data={result.todaySimulation} nq={nq} setNq={setNq} /><Divider /></>
+                )}
+
+                {/* 섹션 7: 재진입 전략 로드맵 */}
+                {opts.reentry && (
+                  <ReentryRoadmap strategy={result.reentryStrategy} />
+                )}
+
+                {/* 하단 면책 */}
+                <div className="mt-6 p-4 bg-[#1a1d27] border border-[#2a2d3a] rounded-xl text-xs text-gray-600 leading-relaxed">
+                  ⚠️ <strong className="text-gray-500">면책 조항:</strong> 본 분석은 AI가 생성한 참고 자료이며 투자 권유가 아닙니다.
+                  모든 투자 판단과 손익은 투자자 본인의 책임입니다.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

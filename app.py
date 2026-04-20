@@ -3,7 +3,7 @@ Stock Analyzer — Streamlit Web App
 검색 → 종목 선택 → 보고서 발급
 """
 
-import sys, warnings
+import sys, warnings, json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -86,7 +86,7 @@ div[data-testid="metric-container"] {
 # ══════════════════════════════════════════════
 def init_state():
     defaults = {
-        "page":           "home",   # "home" | "analyze"
+        "page":           "home",   # "home" | "analyze" | "briefing"
         "search_query":   "",
         "search_results": [],
         "sel_ticker":     "",
@@ -317,12 +317,16 @@ with st.sidebar:
         with col_b:
             st.download_button("↓", data=rpt.read_bytes(), file_name=rpt.name,
                                mime="text/markdown", key=f"dl_{ticker_name}", use_container_width=True)
-    if st.session_state.page == "analyze":
+    if st.session_state.page in ("analyze", "briefing"):
         st.markdown("---")
         if st.button("🔍 검색으로 돌아가기", use_container_width=True):
             st.session_state.page     = "home"
             st.session_state.analysis = None
             st.rerun()
+        if st.session_state.page == "briefing":
+            if st.button("← 보고서로 돌아가기", use_container_width=True):
+                st.session_state.page = "analyze"
+                st.rerun()
 
 
 # ══════════════════════════════════════════════
@@ -511,13 +515,18 @@ elif st.session_state.page == "analyze":
             st.warning("차트 데이터를 불러올 수 없습니다.")
 
     with tab_report:
-        dl_col, _ = st.columns([1, 5])
+        dl_col, brief_col, _ = st.columns([1.2, 1.6, 3.2])
         with dl_col:
             st.download_button(
                 "📥 MD 다운로드", data=report.encode("utf-8"),
                 file_name=f"stock-report-{ticker}.md", mime="text/markdown",
                 use_container_width=True,
             )
+        with brief_col:
+            if st.button("🔮 브리핑 시뮬레이터", key="go_briefing",
+                         use_container_width=True, type="primary"):
+                st.session_state.page = "briefing"
+                st.rerun()
         st.markdown(report)
 
     with tab_raw:
@@ -538,3 +547,56 @@ elif st.session_state.page == "analyze":
                 st.dataframe(pd.DataFrame(tech.items(), columns=["항목","값"]).set_index("항목"), use_container_width=True)
 
     st.success(f"✅ 리포트 저장 완료: `output/stock-report-{ticker}.md`")
+
+
+# ══════════════════════════════════════════════
+#  BRIEFING PAGE — 브리핑 시뮬레이터
+# ══════════════════════════════════════════════
+elif st.session_state.page == "briefing":
+    import streamlit.components.v1 as components
+
+    ticker  = st.session_state.sel_ticker
+    report  = ""
+    if st.session_state.analysis:
+        report = st.session_state.analysis.get("report", "")
+
+    # briefing/index.html 읽기
+    briefing_html_path = BASE_DIR / "briefing" / "index.html"
+    if not briefing_html_path.exists():
+        st.error("briefing/index.html 파일을 찾을 수 없습니다.")
+        st.stop()
+
+    html = briefing_html_path.read_text(encoding="utf-8")
+
+    # MD 콘텐츠와 파일명을 JS 변수로 안전하게 주입 (JSON 인코딩으로 이스케이프)
+    report_json   = json.dumps(report)
+    filename_json = json.dumps(f"stock-report-{ticker}.md")
+    inject = (
+        f"window.preloadedMdContent = {report_json};\n"
+        f"window.preloadedFilename  = {filename_json};"
+    )
+    html = html.replace("// __PRELOADED_CONTENT__", inject)
+
+    # 헤더
+    company = ""
+    if st.session_state.analysis:
+        company = st.session_state.analysis.get("basic", {}).get("종목명", ticker)
+
+    hcol, bcol = st.columns([5, 1])
+    with hcol:
+        st.markdown(f"## 🔮 브리핑 시뮬레이터  `{ticker}`")
+        if company and company != ticker:
+            st.caption(f"{company} · AI 기반 실전 대응 전략 생성기")
+    with bcol:
+        if st.button("← 보고서", use_container_width=True):
+            st.session_state.page = "analyze"
+            st.rerun()
+
+    st.info(
+        "💡 **사용 방법:** 좌측 패널에서 Anthropic API 키 입력 → 평균 단가 입력 → "
+        "원하는 시뮬레이션 옵션 선택 → **브리핑 생성** 클릭",
+        icon="ℹ️",
+    )
+
+    # 브리핑 앱 임베드
+    components.html(html, height=1100, scrolling=True)
