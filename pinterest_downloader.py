@@ -1,6 +1,6 @@
 """
 Pinterest Board Image Downloader — Streamlit App
-Pinterest 로그인 → 내 보드 목록 → 선택 다운로드
+쿠키 세션 로그인 → 내 보드 목록 → 선택 다운로드
 """
 
 import subprocess
@@ -32,35 +32,29 @@ HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-# ── Pinterest 인증 ───────────────────────────────────────
-def pinterest_login(email: str, password: str):
+# ── 세션 쿠키로 로그인 ──────────────────────────────────
+def login_with_cookie(pinterest_sess: str):
+    """_pinterest_sess 쿠키값으로 인증된 세션 생성"""
     session = requests.Session()
     session.headers.update(HEADERS)
-
-    # CSRF 토큰 획득
     session.get("https://www.pinterest.com/", timeout=15)
-    csrf = session.cookies.get("csrftoken", "")
+    session.cookies.set("_pinterest_sess", pinterest_sess, domain=".pinterest.com")
 
-    resp = session.post(
-        "https://www.pinterest.com/resource/UserSessionResource/create/",
-        headers={**HEADERS, "X-CSRFToken": csrf, "Referer": "https://www.pinterest.com/login/"},
-        data={
-            "source_url": "/login/",
-            "data": json.dumps({
-                "options": {"username_or_email": email, "password": password},
-                "context": {},
-            }),
+    # 로그인 확인 — 내 정보 조회
+    resp = session.get(
+        "https://www.pinterest.com/resource/UserResource/get/",
+        params={
+            "source_url": "/",
+            "data": json.dumps({"options": {"field_set_key": "unambiguous_minimal"}, "context": {}}),
+            "_": str(int(time.time() * 1000)),
         },
-        timeout=20,
+        headers=HEADERS,
+        timeout=15,
     )
-
-    result = resp.json()
-    err = result.get("resource_response", {}).get("error")
-    if err:
-        return None, None, str(err)
-
-    user = result.get("resource_response", {}).get("data", {})
-    username = user.get("username", "")
+    data = resp.json().get("resource_response", {})
+    if data.get("error") or not data.get("data"):
+        return None, None, "세션이 유효하지 않습니다."
+    username = data["data"].get("username", "")
     return session, username, None
 
 
@@ -68,7 +62,6 @@ def pinterest_login(email: str, password: str):
 def get_boards(session: requests.Session, username: str) -> list[dict]:
     boards = []
     bookmark = None
-
     while True:
         options = {
             "username": username,
@@ -95,18 +88,17 @@ def get_boards(session: requests.Session, username: str) -> list[dict]:
         bookmark = data.get("bookmark")
         if not bookmark or bookmark == "-end-":
             break
-
     return boards
 
 
-# ── 쿠키 → Netscape 형식 저장 ───────────────────────────
+# ── 쿠키 파일 저장 (gallery-dl용) ──────────────────────
 def save_cookies(session: requests.Session) -> str:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w")
     tmp.write("# Netscape HTTP Cookie File\n")
     for c in session.cookies:
+        domain = c.domain if c.domain.startswith(".") else f".{c.domain}"
         secure = "TRUE" if c.secure else "FALSE"
         expires = int(c.expires) if c.expires else 0
-        domain = c.domain if c.domain.startswith(".") else f".{c.domain}"
         tmp.write(f"{domain}\tTRUE\t{c.path}\t{secure}\t{expires}\t{c.name}\t{c.value}\n")
     tmp.flush()
     return tmp.name
@@ -127,6 +119,18 @@ def install_gallery_dl():
                        capture_output=True, text=True)
     return r.returncode == 0, r.stdout + r.stderr
 
+def run_download(url: str, out_dir: Path, cookie_path: str):
+    cmd = gallery_dl_cmd() + [
+        "--cookies", cookie_path,
+        "--destination", str(out_dir),
+        "--no-mtime",
+        "--retries", "5",
+        "--sleep", "0.3",
+        url,
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+
 
 # ── 유틸 ────────────────────────────────────────────────
 def folder_from_url(url: str) -> str:
@@ -146,26 +150,12 @@ def zip_directory(folder: Path) -> Path:
                 zf.write(f, f.relative_to(folder))
     return zip_path
 
-def run_download(board_url: str, out_dir: Path, cookie_path: str):
-    cmd = gallery_dl_cmd() + [
-        "--cookies", cookie_path,
-        "--destination", str(out_dir),
-        "--no-mtime",
-        "--retries", "5",
-        "--sleep", "0.3",
-        "--sleep-request", "0.2",
-        board_url,
-    ]
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
-
 
 # ════════════════════════════════════════════════════════
 # 페이지 설정
 # ════════════════════════════════════════════════════════
 st.set_page_config(page_title="Pinterest Downloader", page_icon="📌", layout="wide")
 
-# gallery-dl 설치 확인
 if not check_gallery_dl():
     st.warning("`gallery-dl`이 필요합니다.")
     if st.button("📦 설치"):
@@ -178,7 +168,6 @@ if not check_gallery_dl():
             st.code(log)
     st.stop()
 
-# 세션 초기화
 for key, val in [("logged_in", False), ("pinterest_session", None),
                  ("username", ""), ("boards", []), ("cookie_path", "")]:
     if key not in st.session_state:
@@ -191,25 +180,50 @@ for key, val in [("logged_in", False), ("pinterest_session", None),
 if not st.session_state.logged_in:
     st.title("📌 Pinterest Downloader")
 
-    col, _ = st.columns([1.2, 1])
+    col, _ = st.columns([1.4, 1])
     with col:
         st.markdown("### 로그인")
-        with st.form("login_form"):
-            email = st.text_input("이메일", placeholder="example@email.com")
-            password = st.text_input("비밀번호", type="password")
+
+        # 안내
+        with st.expander("🔑 세션 쿠키 가져오는 방법 (클릭해서 보기)", expanded=True):
+            st.markdown("""
+**Pinterest에 로그인한 상태에서 아래 과정을 따라주세요.**
+Google 로그인, 이메일 로그인 모두 동일합니다.
+
+**Chrome 기준:**
+1. `pinterest.com` 접속 (로그인 상태 확인)
+2. `F12` → **Application** 탭
+3. 좌측 **Cookies** → `https://www.pinterest.com` 클릭
+4. 목록에서 **`_pinterest_sess`** 찾기
+5. Value 칸의 값을 전체 복사 (길고 복잡한 문자열)
+6. 아래에 붙여넣기
+
+**Safari 기준:**
+1. 개발자 메뉴 활성화 → 개발자 → 쿠키 보기
+2. `pinterest.com` → `_pinterest_sess` 복사
+""")
+
+        with st.form("cookie_login_form"):
+            sess_cookie = st.text_area(
+                "_pinterest_sess 쿠키값 붙여넣기",
+                placeholder="AZs3dF...매우 긴 값...",
+                height=100,
+            )
             login_btn = st.form_submit_button("로그인", use_container_width=True)
 
         if login_btn:
-            if not email or not password:
-                st.error("이메일과 비밀번호를 입력하세요.")
+            val = sess_cookie.strip()
+            if not val:
+                st.error("쿠키값을 입력하세요.")
             else:
-                with st.spinner("로그인 중..."):
-                    sess, username, err = pinterest_login(email, password)
+                with st.spinner("로그인 확인 중..."):
+                    sess, username, err = login_with_cookie(val)
 
                 if err or not sess:
-                    st.error(f"로그인 실패: {err or '알 수 없는 오류'}")
+                    st.error(f"로그인 실패: {err}")
+                    st.info("쿠키값이 만료되었거나 잘못 복사되었을 수 있습니다. 다시 시도하세요.")
                 else:
-                    with st.spinner("보드 목록 불러오는 중..."):
+                    with st.spinner(f"@{username} 보드 불러오는 중..."):
                         boards = get_boards(sess, username)
                         cookie_path = save_cookies(sess)
 
@@ -233,8 +247,8 @@ with col_user:
 with col_logout:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("로그아웃"):
-        for key in ["logged_in", "pinterest_session", "username", "boards", "cookie_path"]:
-            st.session_state[key] = False if key == "logged_in" else ([] if key == "boards" else "")
+        for k in ["logged_in", "pinterest_session", "username", "boards", "cookie_path"]:
+            st.session_state[k] = False if k == "logged_in" else ([] if k == "boards" else "")
         st.rerun()
 
 st.divider()
@@ -242,23 +256,20 @@ st.divider()
 boards: list[dict] = st.session_state.boards
 tab1, tab2 = st.tabs(["📋 내 보드", "🔗 URL로 다운로드"])
 
-# ── 탭1: 내 보드 목록 ───────────────────────────────────
+# ── 탭1: 내 보드 ────────────────────────────────────────
 with tab1:
     if not boards:
         st.info("보드가 없거나 불러오지 못했습니다.")
     else:
-        st.markdown(f"**총 {len(boards)}개 보드**")
-
-        # 전체 선택
-        col_all, col_dl = st.columns([3, 1])
-        with col_all:
-            select_all = st.checkbox("전체 선택")
-        with col_dl:
+        col_info, col_btn = st.columns([3, 1])
+        with col_info:
+            st.markdown(f"**총 {len(boards)}개 보드**")
+        with col_btn:
             batch_btn = st.button("📥 선택 보드 일괄 다운로드", use_container_width=True, type="primary")
 
+        select_all = st.checkbox("전체 선택")
         st.markdown("---")
 
-        # 보드 그리드 (4열)
         selected_boards = []
         cols_per_row = 4
         rows = [boards[i:i+cols_per_row] for i in range(0, len(boards), cols_per_row)]
@@ -267,11 +278,9 @@ with tab1:
             cols = st.columns(cols_per_row)
             for col, board in zip(cols, row):
                 with col:
-                    board_name = board.get("name", "")
+                    bname = board.get("name", "")
                     pin_count = board.get("pin_count", 0)
-                    board_url = f"https://www.pinterest.com{board.get('url', '')}"
-
-                    # 커버 이미지
+                    burl = f"https://www.pinterest.com{board.get('url', '')}"
                     cover = (board.get("image_cover_url") or
                              board.get("cover_images", {}).get("736x", {}).get("url", ""))
                     if cover:
@@ -283,21 +292,18 @@ with tab1:
                         st.markdown("🖼️")
 
                     checked = st.checkbox(
-                        f"**{board_name}**  \n핀 {pin_count}개",
+                        f"**{bname}**  \n핀 {pin_count}개",
                         value=select_all,
-                        key=f"board_{board.get('id', board_name)}",
+                        key=f"board_{board.get('id', bname)}",
                     )
                     if checked:
-                        selected_boards.append((board_name, board_url, pin_count))
+                        selected_boards.append((bname, burl, pin_count))
 
-        # 일괄 다운로드
         if batch_btn:
             if not selected_boards:
                 st.warning("보드를 선택하세요.")
             else:
-                st.markdown(f"### 다운로드 시작 ({len(selected_boards)}개 보드)")
-                cookie_path = st.session_state.cookie_path
-
+                st.markdown(f"### 다운로드 ({len(selected_boards)}개 보드)")
                 for idx, (bname, burl, bpins) in enumerate(selected_boards):
                     st.markdown(f"**[{idx+1}/{len(selected_boards)}] {bname}** ({bpins}핀)")
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -309,7 +315,7 @@ with tab1:
                     log_lines: list[str] = []
 
                     with st.spinner(f"{bname} 다운로드 중..."):
-                        proc = run_download(burl, out_dir, cookie_path)
+                        proc = run_download(burl, out_dir, st.session_state.cookie_path)
                         for line in proc.stdout:
                             line = line.rstrip()
                             if not line:
@@ -326,6 +332,7 @@ with tab1:
                     all_imgs = count_images(out_dir)
                     total = len(all_imgs)
                     log_box.empty()
+                    status.empty()
 
                     if total > 0:
                         with st.spinner("ZIP 압축 중..."):
@@ -334,16 +341,13 @@ with tab1:
                         with open(zip_path, "rb") as zf:
                             st.download_button(
                                 f"📦 {bname} ZIP ({total}장 / {size_mb}MB)",
-                                data=zf,
-                                file_name=zip_path.name,
-                                mime="application/zip",
-                                use_container_width=True,
-                                key=f"zip_dl_{bname}_{ts}",
+                                data=zf, file_name=zip_path.name,
+                                mime="application/zip", use_container_width=True,
+                                key=f"zip_{bname}_{ts}",
                             )
                         st.success(f"✅ {bname}: {total}장 완료")
                     else:
-                        st.error(f"❌ {bname}: 이미지를 가져오지 못했습니다.")
-
+                        st.error(f"❌ {bname}: 실패")
 
 # ── 탭2: URL 직접 입력 ──────────────────────────────────
 with tab2:
@@ -397,17 +401,14 @@ with tab2:
                                 st.image(str(img), use_container_width=True)
                             except Exception:
                                 st.text(img.name)
-
                 with st.spinner("ZIP 압축 중..."):
                     zip_path = zip_directory(out_dir)
                 size_mb = zip_path.stat().st_size // 1024 // 1024
                 with open(zip_path, "rb") as zf:
                     st.download_button(
                         f"📦 ZIP 다운로드 ({total}장 / {size_mb}MB)",
-                        data=zf,
-                        file_name=zip_path.name,
-                        mime="application/zip",
-                        use_container_width=True,
+                        data=zf, file_name=zip_path.name,
+                        mime="application/zip", use_container_width=True,
                     )
             else:
                 st.error("이미지를 가져오지 못했습니다.")
