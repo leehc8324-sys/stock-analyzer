@@ -209,26 +209,32 @@ if not st.session_state.logged_in:
     with col:
         st.markdown("### 로그인")
 
-        st.markdown("#### 쿠키값 가져오기 (30초면 됩니다)")
-        st.markdown("""
-**1단계** — Pinterest에 로그인한 상태에서 새 탭에서 아래 주소 접속:
-""")
-        st.code("https://www.pinterest.com", language="")
-
-        st.markdown("**2단계** — 아래 명령어를 복사하세요:")
-        st.code(
-            "copy(document.cookie.split(';').find(c=>c.trim().startsWith('_pinterest_sess')).split('=').slice(1).join('='))",
-            language="javascript",
+        # 북마크릿
+        bookmarklet = (
+            "javascript:(function(){"
+            "var s=document.cookie.split(';').find(function(c){"
+            "return c.trim().indexOf('_pinterest_sess')===0;});"
+            "if(s){var v=s.split('=').slice(1).join('=');"
+            "prompt('아래 값을 전체 선택(Ctrl+A)하고 복사(Ctrl+C)하세요',v);}"
+            "else{alert('Pinterest에 먼저 로그인해주세요.');}"
+            "})();"
         )
 
+        st.markdown("#### 쿠키값 가져오기")
+        st.markdown("**① 아래 버튼을 브라우저 북마크 바로 드래그하세요** (한 번만 하면 됩니다)")
+        st.markdown(
+            f'<a href="{bookmarklet}" style="display:inline-block;padding:10px 20px;'
+            f'background:#E60023;color:white;border-radius:8px;text-decoration:none;'
+            f'font-weight:bold;font-size:16px;">📌 Pinterest 쿠키 가져오기</a>',
+            unsafe_allow_html=True,
+        )
         st.markdown("""
-**3단계** — 브라우저에서 `F12` (Mac: `Option+Cmd+J`) → **Console** 탭 클릭
+**② Pinterest** 접속 후 (로그인 상태)
 
-**4단계** — 복사한 명령어를 콘솔에 붙여넣고 `Enter`
+**③** 북마크 바에서 **"Pinterest 쿠키 가져오기"** 클릭
 
-**5단계** — 클립보드에 자동 복사됩니다. 아래 입력란에 `Ctrl+V` (Mac: `Cmd+V`)
+**④** 팝업창에서 값 전체 선택 후 복사 → 아래에 붙여넣기
 """)
-        st.info("💡 명령어 실행 후 콘솔에 `undefined` 라고 뜨면 정상입니다. 클립보드에 이미 복사된 상태예요.")
 
         with st.form("cookie_login_form"):
             sess_cookie = st.text_area(
