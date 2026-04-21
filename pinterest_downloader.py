@@ -209,24 +209,26 @@ if not st.session_state.logged_in:
     with col:
         st.markdown("### 로그인")
 
-        # 안내
-        with st.expander("🔑 세션 쿠키 가져오는 방법 (클릭해서 보기)", expanded=True):
-            st.markdown("""
-**Pinterest에 로그인한 상태에서 아래 과정을 따라주세요.**
-Google 로그인, 이메일 로그인 모두 동일합니다.
-
-**Chrome 기준:**
-1. `pinterest.com` 접속 (로그인 상태 확인)
-2. `F12` → **Application** 탭
-3. 좌측 **Cookies** → `https://www.pinterest.com` 클릭
-4. 목록에서 **`_pinterest_sess`** 찾기
-5. Value 칸의 값을 전체 복사 (길고 복잡한 문자열)
-6. 아래에 붙여넣기
-
-**Safari 기준:**
-1. 개발자 메뉴 활성화 → 개발자 → 쿠키 보기
-2. `pinterest.com` → `_pinterest_sess` 복사
+        st.markdown("#### 쿠키값 가져오기 (30초면 됩니다)")
+        st.markdown("""
+**1단계** — Pinterest에 로그인한 상태에서 새 탭에서 아래 주소 접속:
 """)
+        st.code("https://www.pinterest.com", language="")
+
+        st.markdown("**2단계** — 아래 명령어를 복사하세요:")
+        st.code(
+            "copy(document.cookie.split(';').find(c=>c.trim().startsWith('_pinterest_sess')).split('=').slice(1).join('='))",
+            language="javascript",
+        )
+
+        st.markdown("""
+**3단계** — 브라우저에서 `F12` (Mac: `Option+Cmd+J`) → **Console** 탭 클릭
+
+**4단계** — 복사한 명령어를 콘솔에 붙여넣고 `Enter`
+
+**5단계** — 클립보드에 자동 복사됩니다. 아래 입력란에 `Ctrl+V` (Mac: `Cmd+V`)
+""")
+        st.info("💡 명령어 실행 후 콘솔에 `undefined` 라고 뜨면 정상입니다. 클립보드에 이미 복사된 상태예요.")
 
         with st.form("cookie_login_form"):
             sess_cookie = st.text_area(
