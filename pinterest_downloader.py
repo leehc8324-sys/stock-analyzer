@@ -56,26 +56,101 @@ def install_gallery_dl():
                        capture_output=True, text=True)
     return r.returncode == 0, r.stdout + r.stderr
 
-# ── 보드 목록: gallery-dl로 URL 수집 ───────────────────
+# ── 보드 목록: 프로필 페이지 HTML 파싱 ─────────────────
 def list_boards(cookie_path: str, username: str) -> list[dict]:
-    """gallery-dl로 프로필에서 보드 URL 목록 추출"""
-    cmd = gallery_dl_cmd() + [
-        "--cookies", cookie_path,
-        "--print", "{board[url]}\t{board[name]}\t{board[pin_count]}",
-        "--range", "1-1",   # 보드당 1개만 probe
-        f"https://www.pinterest.com/{username}/",
-    ]
+    """Pinterest 프로필 페이지 HTML에서 보드 목록 추출"""
+    import json as _json
+
+    # 쿠키 파일 읽기
+    cookies = {}
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        boards = {}
-        for line in r.stdout.splitlines():
-            parts = line.strip().split("\t")
-            if len(parts) >= 1 and parts[0].startswith("/"):
-                url = f"https://www.pinterest.com{parts[0]}"
-                name = parts[1] if len(parts) > 1 else parts[0].split("/")[-2]
-                pin_count = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-                boards[url] = {"name": name, "url": url, "pin_count": pin_count}
-        return list(boards.values())
+        with open(cookie_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    cookies[parts[5]] = parts[6]
+    except Exception:
+        return []
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+
+    try:
+        import requests as _req
+        sess = _req.Session()
+        sess.headers.update(headers)
+        for name, val in cookies.items():
+            sess.cookies.set(name, val, domain=".pinterest.com")
+
+        resp = sess.get(
+            f"https://www.pinterest.com/{username}/boards/",
+            timeout=20,
+        )
+        html = resp.text
+
+        # Pinterest가 HTML에 삽입한 JSON 데이터 탐색
+        boards = []
+
+        # 방법1: __PWS_DATA__ 스크립트 태그
+        m = re.search(r'<script id="__PWS_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if m:
+            try:
+                raw = _json.loads(m.group(1))
+                # props.pageProps.boards 또는 유사 경로 탐색
+                def dig(obj, depth=0):
+                    if depth > 10:
+                        return []
+                    if isinstance(obj, list):
+                        if obj and isinstance(obj[0], dict) and "url" in obj[0] and "name" in obj[0]:
+                            candidates = [x for x in obj if "/pin/" not in str(x.get("url", ""))]
+                            if candidates:
+                                return candidates
+                        for item in obj:
+                            r = dig(item, depth+1)
+                            if r:
+                                return r
+                    if isinstance(obj, dict):
+                        for v in obj.values():
+                            r = dig(v, depth+1)
+                            if r:
+                                return r
+                    return []
+                found = dig(raw)
+                boards = [
+                    {
+                        "name": b.get("name", ""),
+                        "url": f"https://www.pinterest.com{b['url']}",
+                        "pin_count": b.get("pin_count", 0),
+                        "cover": (b.get("image_cover_url") or ""),
+                    }
+                    for b in found if b.get("url")
+                ]
+            except Exception:
+                pass
+
+        # 방법2: HTML에서 보드 URL 패턴 추출
+        if not boards:
+            pattern = rf'href="(/{re.escape(username)}/[^/"]+/)"'
+            urls = list(dict.fromkeys(re.findall(pattern, html)))
+            boards = [
+                {"name": u.split("/")[-2].replace("-", " ").title(),
+                 "url": f"https://www.pinterest.com{u}",
+                 "pin_count": 0, "cover": ""}
+                for u in urls
+                if u != f"/{username}/"
+            ]
+
+        return boards
+
     except Exception:
         return []
 
