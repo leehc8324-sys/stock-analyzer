@@ -119,17 +119,42 @@ def install_gallery_dl():
                        capture_output=True, text=True)
     return r.returncode == 0, r.stdout + r.stderr
 
+ARCHIVE_DIR = BASE_DIR / "pinterest_archives"
+ARCHIVE_DIR.mkdir(exist_ok=True)
+
+def archive_path_for(url: str) -> Path:
+    """보드 URL → 고유 archive 파일 경로 (재실행 시 중복 방지)"""
+    import hashlib
+    key = hashlib.md5(url.rstrip("/").encode()).hexdigest()[:12]
+    return ARCHIVE_DIR / f"{key}.sqlite3"
+
 def run_download(url: str, out_dir: Path, cookie_path: str):
+    archive = archive_path_for(url)
     cmd = gallery_dl_cmd() + [
         "--cookies", cookie_path,
         "--destination", str(out_dir),
         "--no-mtime",
         "--retries", "5",
         "--sleep", "0.3",
+        "--download-archive", str(archive),  # 이미 받은 파일 스킵
         url,
     ]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
+
+def archive_count(url: str) -> int:
+    """아카이브에 기록된 기존 다운로드 수"""
+    p = archive_path_for(url)
+    if not p.exists():
+        return 0
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(p))
+        count = con.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+        con.close()
+        return count
+    except Exception:
+        return 0
 
 
 # ── 유틸 ────────────────────────────────────────────────
@@ -291,8 +316,11 @@ with tab1:
                     else:
                         st.markdown("🖼️")
 
+                    cached = archive_count(burl)
+                    label = (f"**{bname}**  \n핀 {pin_count}개"
+                             + (f" · 캐시 {cached}개" if cached else ""))
                     checked = st.checkbox(
-                        f"**{bname}**  \n핀 {pin_count}개",
+                        label,
                         value=select_all,
                         key=f"board_{board.get('id', bname)}",
                     )
@@ -335,6 +363,7 @@ with tab1:
                     status.empty()
 
                     if total > 0:
+                        cached_after = archive_count(burl)
                         with st.spinner("ZIP 압축 중..."):
                             zip_path = zip_directory(out_dir)
                         size_mb = zip_path.stat().st_size // 1024 // 1024
@@ -345,9 +374,13 @@ with tab1:
                                 mime="application/zip", use_container_width=True,
                                 key=f"zip_{bname}_{ts}",
                             )
-                        st.success(f"✅ {bname}: {total}장 완료")
+                        st.success(f"✅ {bname}: {total}장 완료 (누적 캐시: {cached_after}개)")
                     else:
-                        st.error(f"❌ {bname}: 실패")
+                        cached_n = archive_count(burl)
+                        if cached_n > 0:
+                            st.info(f"✅ {bname}: 새 이미지 없음 (기존 캐시 {cached_n}개 — 이미 최신)")
+                        else:
+                            st.error(f"❌ {bname}: 실패")
 
 # ── 탭2: URL 직접 입력 ──────────────────────────────────
 with tab2:
