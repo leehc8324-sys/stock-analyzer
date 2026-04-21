@@ -15,6 +15,7 @@ from datetime import datetime
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ── 경로 ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -221,20 +222,26 @@ if not st.session_state.logged_in:
         )
 
         st.markdown("#### 쿠키값 가져오기")
-        st.markdown("**① 아래 버튼을 브라우저 북마크 바로 드래그하세요** (한 번만 하면 됩니다)")
-        st.markdown(
-            f'<a href="{bookmarklet}" style="display:inline-block;padding:10px 20px;'
-            f'background:#E60023;color:white;border-radius:8px;text-decoration:none;'
-            f'font-weight:bold;font-size:16px;">📌 Pinterest 쿠키 가져오기</a>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("""
-**② Pinterest** 접속 후 (로그인 상태)
 
-**③** 북마크 바에서 **"Pinterest 쿠키 가져오기"** 클릭
-
-**④** 팝업창에서 값 전체 선택 후 복사 → 아래에 붙여넣기
-""")
+        components.html(f"""
+        <div style="font-family:-apple-system,sans-serif;padding:4px 0 8px 0">
+          <p style="margin:0 0 10px 0;font-size:14px;color:#333;">
+            <b>① 아래 빨간 버튼을 북마크 바로 드래그</b>하세요 (한 번만)
+          </p>
+          <a href="{bookmarklet}"
+             style="display:inline-block;padding:12px 22px;background:#E60023;
+                    color:white;border-radius:8px;text-decoration:none;
+                    font-weight:bold;font-size:15px;cursor:grab;user-select:none;">
+            📌 Pinterest 쿠키 가져오기
+          </a>
+          <p style="margin:14px 0 4px 0;font-size:14px;color:#333;">
+            <b>② Pinterest 접속</b> (로그인 상태) → 북마크 바에서 위 버튼 클릭
+          </p>
+          <p style="margin:0;font-size:14px;color:#333;">
+            <b>③ 팝업창</b>에서 Ctrl+A → Ctrl+C 복사 → 아래 입력란에 붙여넣기
+          </p>
+        </div>
+        """, height=155)
 
         with st.form("cookie_login_form"):
             sess_cookie = st.text_area(
