@@ -33,30 +33,66 @@ HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-# ── 세션 쿠키로 로그인 ──────────────────────────────────
-def login_with_cookie(pinterest_sess: str):
-    """_pinterest_sess 쿠키값으로 인증된 세션 생성"""
+# ── 쿠키 파일 파싱 ──────────────────────────────────────
+def parse_cookie_file(content: str) -> dict:
+    """Netscape cookies.txt → {name: value} dict"""
+    cookies = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            cookies[parts[5]] = parts[6]
+    return cookies
+
+# ── 쿠키 파일로 로그인 ──────────────────────────────────
+def login_with_cookie(cookie_content: str):
+    """cookies.txt 전체 내용으로 인증된 세션 생성"""
+    cookies = parse_cookie_file(cookie_content)
+
+    if "_pinterest_sess" not in cookies:
+        return None, None, "_pinterest_sess 쿠키를 찾을 수 없습니다."
+
     session = requests.Session()
     session.headers.update(HEADERS)
-    session.get("https://www.pinterest.com/", timeout=15)
-    session.cookies.set("_pinterest_sess", pinterest_sess, domain=".pinterest.com")
 
-    # 로그인 확인 — 내 정보 조회
-    resp = session.get(
-        "https://www.pinterest.com/resource/UserResource/get/",
-        params={
-            "source_url": "/",
-            "data": json.dumps({"options": {"field_set_key": "unambiguous_minimal"}, "context": {}}),
-            "_": str(int(time.time() * 1000)),
-        },
-        headers=HEADERS,
-        timeout=15,
-    )
-    data = resp.json().get("resource_response", {})
-    if data.get("error") or not data.get("data"):
-        return None, None, "세션이 유효하지 않습니다."
-    username = data["data"].get("username", "")
-    return session, username, None
+    # 모든 쿠키 세션에 등록
+    for name, value in cookies.items():
+        domain = ".pinterest.com"
+        session.cookies.set(name, value, domain=domain)
+
+    # 로그인 확인 — 홈 페이지에서 username 추출
+    try:
+        resp = session.get(
+            "https://www.pinterest.com/resource/UserResource/get/",
+            params={
+                "source_url": "/",
+                "data": json.dumps({"options": {"field_set_key": "unambiguous_minimal"}, "context": {}}),
+                "_": str(int(time.time() * 1000)),
+            },
+            headers=HEADERS,
+            timeout=15,
+        )
+        if resp.status_code == 200 and resp.text.strip():
+            data = resp.json().get("resource_response", {})
+            username = (data.get("data") or {}).get("username", "")
+            if username:
+                return session, username, None
+    except Exception:
+        pass
+
+    # 대안: 메인 페이지 HTML에서 username 추출
+    try:
+        resp = session.get("https://www.pinterest.com/", timeout=15)
+        import re
+        match = re.search(r'"username"\s*:\s*"([^"]+)"', resp.text)
+        if match:
+            return session, match.group(1), None
+    except Exception:
+        pass
+
+    return None, None, "로그인 확인 실패. 쿠키가 만료되었을 수 있습니다."
 
 
 # ── 보드 목록 조회 ──────────────────────────────────────
@@ -240,40 +276,28 @@ if not st.session_state.logged_in:
                               disabled=uploaded is None)
 
         if login_btn and uploaded:
-            # 쿠키 파일에서 _pinterest_sess 추출
             content = uploaded.read().decode("utf-8", errors="ignore")
-            sess_val = None
-            for line in content.splitlines():
-                if "_pinterest_sess" in line and not line.startswith("#"):
-                    parts = line.strip().split("\t")
-                    if len(parts) >= 7:
-                        sess_val = parts[-1]
-                        break
 
-            if not sess_val:
-                st.error("쿠키 파일에서 Pinterest 세션을 찾을 수 없습니다. Pinterest 탭에서 Export 했는지 확인하세요.")
+            with st.spinner("로그인 확인 중..."):
+                sess, username, err = login_with_cookie(content)
+
+            if err or not sess:
+                st.error(f"로그인 실패: {err}")
             else:
-                with st.spinner("로그인 확인 중..."):
-                    sess, username, err = login_with_cookie(sess_val)
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w")
+                tmp.write(content)
+                tmp.flush()
+                cookie_path = tmp.name
 
-                if err or not sess:
-                    st.error(f"로그인 실패: {err}")
-                else:
-                    # 전체 쿠키 파일을 임시 저장
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w")
-                    tmp.write(content)
-                    tmp.flush()
-                    cookie_path = tmp.name
+                with st.spinner(f"@{username} 보드 불러오는 중..."):
+                    boards = get_boards(sess, username)
 
-                    with st.spinner(f"@{username} 보드 불러오는 중..."):
-                        boards = get_boards(sess, username)
-
-                    st.session_state.logged_in = True
-                    st.session_state.pinterest_session = sess
-                    st.session_state.username = username
-                    st.session_state.boards = boards
-                    st.session_state.cookie_path = cookie_path
-                    st.rerun()
+                st.session_state.logged_in = True
+                st.session_state.pinterest_session = sess
+                st.session_state.username = username
+                st.session_state.boards = boards
+                st.session_state.cookie_path = cookie_path
+                st.rerun()
     st.stop()
 
 
