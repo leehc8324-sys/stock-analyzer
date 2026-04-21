@@ -208,64 +208,65 @@ if not st.session_state.logged_in:
 
     col, _ = st.columns([1.4, 1])
     with col:
-        st.markdown("### 로그인")
+        st.markdown("### Pinterest 로그인")
+        st.markdown("Google 로그인 포함, 모든 방식 지원")
+        st.divider()
 
-        # 북마크릿
-        bookmarklet = (
-            "javascript:(function(){"
-            "var s=document.cookie.split(';').find(function(c){"
-            "return c.trim().indexOf('_pinterest_sess')===0;});"
-            "if(s){var v=s.split('=').slice(1).join('=');"
-            "prompt('아래 값을 전체 선택(Ctrl+A)하고 복사(Ctrl+C)하세요',v);}"
-            "else{alert('Pinterest에 먼저 로그인해주세요.');}"
-            "})();"
+        st.markdown("#### 방법: 쿠키 파일 업로드")
+
+        components.html("""
+        <div style="font-family:-apple-system,sans-serif;line-height:1.7;color:#222;">
+          <p style="margin:0 0 8px 0"><b>① Chrome 확장 설치</b> (한 번만)</p>
+          <a href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
+             target="_blank"
+             style="display:inline-block;padding:9px 18px;background:#4285F4;color:white;
+                    border-radius:7px;text-decoration:none;font-weight:bold;font-size:14px;">
+            🔧 Get cookies.txt LOCALLY 설치
+          </a>
+          <br><br>
+          <p style="margin:0 0 4px 0"><b>② Pinterest 접속</b> — 로그인 상태 확인</p>
+          <p style="margin:0 0 4px 0"><b>③ 확장 아이콘 클릭</b> → <b>Export</b> 버튼 클릭</p>
+          <p style="margin:0 0 4px 0"><b>④ 저장된 <code>pinterest.com_cookies.txt</code> 파일을 아래에 업로드</b></p>
+        </div>
+        """, height=185)
+
+        uploaded = st.file_uploader(
+            "cookies.txt 파일 업로드",
+            type=["txt"],
+            label_visibility="collapsed",
         )
 
-        st.markdown("#### 쿠키값 가져오기")
+        login_btn = st.button("로그인", use_container_width=True, type="primary",
+                              disabled=uploaded is None)
 
-        components.html(f"""
-        <div style="font-family:-apple-system,sans-serif;padding:4px 0 8px 0">
-          <p style="margin:0 0 10px 0;font-size:14px;color:#333;">
-            <b>① 아래 빨간 버튼을 북마크 바로 드래그</b>하세요 (한 번만)
-          </p>
-          <a href="{bookmarklet}"
-             style="display:inline-block;padding:12px 22px;background:#E60023;
-                    color:white;border-radius:8px;text-decoration:none;
-                    font-weight:bold;font-size:15px;cursor:grab;user-select:none;">
-            📌 Pinterest 쿠키 가져오기
-          </a>
-          <p style="margin:14px 0 4px 0;font-size:14px;color:#333;">
-            <b>② Pinterest 접속</b> (로그인 상태) → 북마크 바에서 위 버튼 클릭
-          </p>
-          <p style="margin:0;font-size:14px;color:#333;">
-            <b>③ 팝업창</b>에서 Ctrl+A → Ctrl+C 복사 → 아래 입력란에 붙여넣기
-          </p>
-        </div>
-        """, height=155)
+        if login_btn and uploaded:
+            # 쿠키 파일에서 _pinterest_sess 추출
+            content = uploaded.read().decode("utf-8", errors="ignore")
+            sess_val = None
+            for line in content.splitlines():
+                if "_pinterest_sess" in line and not line.startswith("#"):
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 7:
+                        sess_val = parts[-1]
+                        break
 
-        with st.form("cookie_login_form"):
-            sess_cookie = st.text_area(
-                "_pinterest_sess 쿠키값 붙여넣기",
-                placeholder="AZs3dF...매우 긴 값...",
-                height=100,
-            )
-            login_btn = st.form_submit_button("로그인", use_container_width=True)
-
-        if login_btn:
-            val = sess_cookie.strip()
-            if not val:
-                st.error("쿠키값을 입력하세요.")
+            if not sess_val:
+                st.error("쿠키 파일에서 Pinterest 세션을 찾을 수 없습니다. Pinterest 탭에서 Export 했는지 확인하세요.")
             else:
                 with st.spinner("로그인 확인 중..."):
-                    sess, username, err = login_with_cookie(val)
+                    sess, username, err = login_with_cookie(sess_val)
 
                 if err or not sess:
                     st.error(f"로그인 실패: {err}")
-                    st.info("쿠키값이 만료되었거나 잘못 복사되었을 수 있습니다. 다시 시도하세요.")
                 else:
+                    # 전체 쿠키 파일을 임시 저장
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w")
+                    tmp.write(content)
+                    tmp.flush()
+                    cookie_path = tmp.name
+
                     with st.spinner(f"@{username} 보드 불러오는 중..."):
                         boards = get_boards(sess, username)
-                        cookie_path = save_cookies(sess)
 
                     st.session_state.logged_in = True
                     st.session_state.pinterest_session = sess
