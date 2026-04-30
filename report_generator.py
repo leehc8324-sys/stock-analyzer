@@ -155,12 +155,12 @@ def _fetch_kr_news(ticker: str) -> list:
 # ──────────────────────────────────────────────
 def fetch_all_data(ticker: str) -> dict:
     """yfinance + 외부 3개 소스(TradingView/Investing.com/TradingEconomics) 수집"""
-    # ── yfinance Ticker (레이트 리밋 시 재시도) ────────────────────
-    stock = yf.Ticker(ticker)
+    # ── 캐시 세션으로 Ticker 생성 (레이트 리밋 방지) ─────────────────
+    from yf_session import make_ticker
+    stock = make_ticker(ticker)
     info  = _yf_retry(lambda: stock.info)
 
-    # 연속 호출 시 서버 부하 완화 (0.5초 간격)
-    time.sleep(0.5)
+    time.sleep(0.3)   # 연속 호출 완화
 
     # ── 재무제표
     try: inc = stock.financials

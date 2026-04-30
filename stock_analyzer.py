@@ -8,32 +8,18 @@ import time, json
 import warnings
 warnings.filterwarnings('ignore')
 
-
-def _yf_retry(fn, retries: int = 3, base_wait: float = 4.0):
-    """Too Many Requests 에러 시 지수 백오프 재시도"""
-    last = None
-    for i in range(retries):
-        try:
-            return fn()
-        except Exception as e:
-            last = e
-            msg = str(e)
-            if "Too Many Requests" in msg or "Rate" in msg or "429" in msg:
-                if i < retries - 1:
-                    time.sleep(base_wait * (i + 1))
-                    continue
-            raise
-    raise RuntimeError(
-        f"yfinance 레이트 리밋 초과 ({retries}회 재시도 실패). "
-        f"잠시 후 다시 시도해주세요. 마지막 오류: {last}"
-    )
+from yf_session import make_ticker
 
 
 class StockAnalyzer:
-    def __init__(self, ticker: str):
+    def __init__(self, ticker: str, prefetched_info: dict = None):
+        """
+        prefetched_info: 이미 fetch_all_data에서 가져온 info dict를 전달하면
+                         .info API 중복 호출 없이 재사용 (레이트 리밋 방지)
+        """
         self.ticker = ticker
-        self.stock  = yf.Ticker(ticker)
-        self.info   = _yf_retry(lambda: self.stock.info)
+        self.stock  = make_ticker(ticker)          # 캐시 세션 사용
+        self.info   = prefetched_info or self.stock.info
         self.today  = datetime.today()
 
     def get_basic_info(self) -> dict:

@@ -135,8 +135,9 @@ def fmt(v, suffix=""):
 def build_plotly_chart(ticker: str):
     from ta.trend import MACD, SMAIndicator
     from ta.momentum import RSIIndicator
+    from yf_session import make_ticker as _mk_ticker
     today = datetime.today()
-    df = yf.Ticker(ticker).history(start=today - timedelta(days=220), end=today)
+    df = _mk_ticker(ticker).history(start=today - timedelta(days=220), end=today)
     if df.empty:
         return None
     close = df["Close"]
@@ -270,51 +271,26 @@ def generate_report(ticker, basic, val, tech, analyst) -> str:
 > 모든 투자 판단과 손익은 투자자 본인의 책임입니다.
 """
 
-# ── yfinance 레이트 리밋 방지: 30분 캐시 ─────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
-def _cached_yf_fetch(ticker: str) -> dict:
-    """yfinance 전체 데이터를 한 번만 수집 후 30분 캐시 (레이트 리밋 방지)"""
-    import time
-    last_err = None
-    for attempt in range(3):
-        try:
-            stock = yf.Ticker(ticker)
-            info  = stock.info
-            # info가 비어 있거나 quoteType이 없으면 유효하지 않은 티커
-            if not info or not info.get("symbol"):
-                raise ValueError(f"'{ticker}' 종목 정보를 가져올 수 없습니다. 티커를 확인하세요.")
-            return {"ok": True, "info": info}
-        except Exception as e:
-            last_err = e
-            msg = str(e)
-            if "Too Many Requests" in msg or "Rate" in msg or "429" in msg:
-                wait = (attempt + 1) * 5   # 5s → 10s → 15s
-                time.sleep(wait)
-                continue
-            raise   # 다른 오류는 즉시 상위로
-    raise RuntimeError(
-        f"Yahoo Finance 레이트 리밋 초과 (3회 재시도 실패). "
-        f"약 1분 후 다시 시도해주세요. 원인: {last_err}"
-    )
-
 def run_analysis(ticker: str) -> dict:
-    import time
+    """
+    레이트 리밋 최적화:
+    - fetch_all_data 가 먼저 .info 1회 호출 (캐시 세션)
+    - StockAnalyzer 에 pre-fetched info 전달 → 중복 .info 호출 0회
+    - Plotly 차트도 동일한 캐시 세션 재사용
+    """
+    # Phase 1: 전체 데이터 수집 (yfinance .info 딱 1회)
+    data = fetch_all_data(ticker)
 
-    # ── 캐시에서 yfinance info 가져오기 (레이트 리밋 방지) ──────────
-    _cached_yf_fetch(ticker)   # 유효성 검증 + 캐시 워밍업
-
-    # Phase 1: StockAnalyzer — 기술적 분석
-    analyzer = StockAnalyzer(ticker)
+    # Phase 2: StockAnalyzer — pre-fetched info 재사용 (추가 API 호출 없음)
+    from yf_session import make_ticker as _mk
+    analyzer = StockAnalyzer(ticker, prefetched_info=data["info"])
     basic    = analyzer.get_basic_info()
     val      = analyzer.get_valuation_metrics()
     tech     = analyzer.get_technical_analysis()
     analyst  = analyzer.get_analyst_info()
     earnings = analyzer.get_earnings()
 
-    # Phase 2: 전체 데이터 수집 (재무제표, 뉴스, 실적)
-    data = fetch_all_data(ticker)
-
-    # Phase 3: Plotly 차트 생성
+    # Phase 3: Plotly 차트 생성 (캐시 세션의 history 재사용)
     fig = build_plotly_chart(ticker)
 
     # Phase 4: 10섹션 풀 리포트 생성
