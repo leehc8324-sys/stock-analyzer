@@ -270,7 +270,39 @@ def generate_report(ticker, basic, val, tech, analyst) -> str:
 > 모든 투자 판단과 손익은 투자자 본인의 책임입니다.
 """
 
+# ── yfinance 레이트 리밋 방지: 30분 캐시 ─────────────────────────
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_yf_fetch(ticker: str) -> dict:
+    """yfinance 전체 데이터를 한 번만 수집 후 30분 캐시 (레이트 리밋 방지)"""
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            stock = yf.Ticker(ticker)
+            info  = stock.info
+            # info가 비어 있거나 quoteType이 없으면 유효하지 않은 티커
+            if not info or not info.get("symbol"):
+                raise ValueError(f"'{ticker}' 종목 정보를 가져올 수 없습니다. 티커를 확인하세요.")
+            return {"ok": True, "info": info}
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if "Too Many Requests" in msg or "Rate" in msg or "429" in msg:
+                wait = (attempt + 1) * 5   # 5s → 10s → 15s
+                time.sleep(wait)
+                continue
+            raise   # 다른 오류는 즉시 상위로
+    raise RuntimeError(
+        f"Yahoo Finance 레이트 리밋 초과 (3회 재시도 실패). "
+        f"약 1분 후 다시 시도해주세요. 원인: {last_err}"
+    )
+
 def run_analysis(ticker: str) -> dict:
+    import time
+
+    # ── 캐시에서 yfinance info 가져오기 (레이트 리밋 방지) ──────────
+    _cached_yf_fetch(ticker)   # 유효성 검증 + 캐시 워밍업
+
     # Phase 1: StockAnalyzer — 기술적 분석
     analyzer = StockAnalyzer(ticker)
     basic    = analyzer.get_basic_info()
