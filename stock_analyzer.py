@@ -8,18 +8,19 @@ import time, json
 import warnings
 warnings.filterwarnings('ignore')
 
-from yf_session import make_ticker
+from yf_session import make_ticker, get_cached_info
 
 
 class StockAnalyzer:
     def __init__(self, ticker: str, prefetched_info: dict = None):
         """
-        prefetched_info: 이미 fetch_all_data에서 가져온 info dict를 전달하면
-                         .info API 중복 호출 없이 재사용 (레이트 리밋 방지)
+        prefetched_info: fetch_all_data에서 이미 가져온 info dict.
+                         전달하면 .info 재호출 없이 재사용 (레이트 리밋 방지).
         """
         self.ticker = ticker
-        self.stock  = make_ticker(ticker)          # 캐시 세션 사용
-        self.info   = prefetched_info or self.stock.info
+        self.stock  = make_ticker(ticker)
+        # prefetched_info 우선 → 없으면 파일 캐시 사용
+        self.info   = prefetched_info if prefetched_info else get_cached_info(ticker)
         self.today  = datetime.today()
 
     def get_basic_info(self) -> dict:
